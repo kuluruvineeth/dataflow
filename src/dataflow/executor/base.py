@@ -2,9 +2,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Sequence
-from pathlib import Path
 
 from dataflow.data import DocumentsPipeline
+from dataflow.io import DataFolderLike, get_datafolder
 from dataflow.pipeline.base import PipelineStep
 
 logger = logging.getLogger(__name__)
@@ -13,9 +13,9 @@ Pipeline = list[PipelineStep | Callable[..., DocumentsPipeline] | Sequence]
 
 
 class PipelineExecutor(ABC):
-    def __init__(self, pipeline: Pipeline, logging_dir: str | Path, skip_completed: bool = True):
+    def __init__(self, pipeline: Pipeline, logging_dir: DataFolderLike, skip_completed: bool = True):
         self.pipeline = pipeline
-        self.logging_dir = Path(logging_dir)
+        self.logging_dir = get_datafolder(logging_dir)
         self.skip_completed = skip_completed
 
     @property
@@ -42,16 +42,14 @@ class PipelineExecutor(ABC):
         self.mark_rank_as_completed(rank)
         logger.info("rank %d completed", rank)
 
-    def _completion_path(self, rank: int) -> Path:
-        return self.logging_dir / "completions" / f"{rank:05d}"
+    def _completion_path(self, rank: int) -> str:
+        return f"completions/{rank:05d}"
 
     def is_rank_completed(self, rank: int) -> bool:
-        return self.skip_completed and self._completion_path(rank).is_file()
+        return self.skip_completed and self.logging_dir.isfile(self._completion_path(rank))
 
     def mark_rank_as_completed(self, rank: int) -> None:
-        path = self._completion_path(rank)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        self.logging_dir.open(self._completion_path(rank), "w").close()
 
     def get_incomplete_ranks(self) -> list[int]:
         return [rank for rank in range(self.world_size) if not self.is_rank_completed(rank)]

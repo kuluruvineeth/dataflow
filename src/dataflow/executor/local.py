@@ -1,9 +1,9 @@
 import logging
 import multiprocessing
 from copy import deepcopy
-from pathlib import Path
 
 from dataflow.executor.base import Pipeline, PipelineExecutor
+from dataflow.io import DataFolderLike
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class LocalPipelineExecutor(PipelineExecutor):
     def __init__(
         self,
         pipeline: Pipeline,
-        logging_dir: str | Path,
+        logging_dir: DataFolderLike,
         tasks: int = 1,
         workers: int = -1,
         skip_completed: bool = True,
