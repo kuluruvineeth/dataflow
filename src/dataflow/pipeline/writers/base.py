@@ -45,7 +45,9 @@ class DiskWriter(PipelineStep):
 
     def write(self, document: Document, rank: int = 0) -> None:
         file = self.output_mg.get_file(self.get_output_filename(document, rank))
-        self.write_record(self.adapt(document), file)
+        with self.track_time():
+            self.write_record(self.adapt(document), file)
+        self.stat_update("total")
 
     def __enter__(self) -> "DiskWriter":
         return self

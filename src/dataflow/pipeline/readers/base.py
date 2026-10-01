@@ -55,8 +55,11 @@ class BaseDiskReader(PipelineStep):
         read = 0
         for filepath in shard:
             logger.info("rank %d reading %s", rank, filepath)
+            self.stat_update("input_files")
             for document in self.read_file(filepath):
                 if self.limit != -1 and read >= self.limit:
                     return
+                self.stat_update("documents")
+                self.update_doc_stats(document)
                 yield document
                 read += 1

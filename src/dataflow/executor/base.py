@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from dataflow.data import DocumentsPipeline
 from dataflow.io import DataFolderLike, get_datafolder
 from dataflow.pipeline.base import PipelineStep
+from dataflow.utils.stats import PipelineStats
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class PipelineExecutor(ABC):
     def world_size(self) -> int: ...
 
     @abstractmethod
-    def run(self) -> None: ...
+    def run(self) -> PipelineStats: ...
 
     def _run_for_rank(self, rank: int) -> None:
         if self.is_rank_completed(rank):
@@ -39,8 +40,24 @@ class PipelineExecutor(ABC):
                 raise ValueError(f"not a pipeline step: {step!r}")
         if data is not None:
             deque(data, maxlen=0)
+        self.save_rank_stats(rank)
         self.mark_rank_as_completed(rank)
         logger.info("rank %d completed", rank)
+
+    def save_rank_stats(self, rank: int) -> None:
+        stats = PipelineStats([step.stats for step in self.pipeline if isinstance(step, PipelineStep)])
+        with self.logging_dir.open(f"stats/{rank:05d}.json", "w") as file:
+            file.write(stats.to_json())
+
+    def merge_stats(self) -> PipelineStats:
+        merged = PipelineStats()
+        if self.logging_dir.exists("stats"):
+            for path in self.logging_dir.list_files("stats"):
+                with self.logging_dir.open(path, "r") as file:
+                    merged += PipelineStats.from_json(file.read())
+        with self.logging_dir.open("stats.json", "w") as file:
+            file.write(merged.to_json())
+        return merged
 
     def _completion_path(self, rank: int) -> str:
         return f"completions/{rank:05d}"

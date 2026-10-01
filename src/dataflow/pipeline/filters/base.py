@@ -20,11 +20,18 @@ class BaseFilter(PipelineStep):
     def run(self, data: DocumentsPipeline, rank: int = 0, world_size: int = 1) -> DocumentsPipeline:
         with self.exclusion_writer or nullcontext():
             for document in data:
-                result = self.filter(document)
+                with self.track_time():
+                    result = self.filter(document)
                 keep, reason = result if isinstance(result, tuple) else (result, None)
+                self.stat_update("total")
                 if keep:
+                    self.stat_update("forwarded")
                     yield document
-                elif self.exclusion_writer:
+                    continue
+                self.stat_update("dropped")
+                if reason:
+                    self.stat_update(f"dropped_{reason}")
+                if self.exclusion_writer:
                     if reason:
                         document.metadata["filter_reason"] = reason
                     self.exclusion_writer.write(document, rank)
