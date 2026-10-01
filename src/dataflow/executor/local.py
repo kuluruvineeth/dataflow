@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
 
 from dataflow.executor.base import Pipeline, PipelineExecutor
@@ -51,6 +52,6 @@ class LocalPipelineExecutor(PipelineExecutor):
 
     def _run_parallel(self, ranks: list[int]) -> None:
         ctx = multiprocessing.get_context(self.start_method)
-        with ctx.Pool(min(self.workers, len(ranks))) as pool:
-            for _ in pool.imap_unordered(self._run_for_rank, ranks):
+        with ProcessPoolExecutor(min(self.workers, len(ranks)), mp_context=ctx) as pool:
+            for _ in pool.map(self._run_for_rank, ranks):
                 pass
