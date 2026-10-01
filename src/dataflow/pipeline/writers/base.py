@@ -43,9 +43,18 @@ class DiskWriter(PipelineStep):
     @abstractmethod
     def write_record(self, record: dict, file: IO) -> None: ...
 
+    def write(self, document: Document, rank: int = 0) -> None:
+        file = self.output_mg.get_file(self.get_output_filename(document, rank))
+        self.write_record(self.adapt(document), file)
+
+    def __enter__(self) -> "DiskWriter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.output_mg.close()
+
     def run(self, data: DocumentsPipeline, rank: int = 0, world_size: int = 1) -> DocumentsPipeline:
-        with self.output_mg:
+        with self:
             for document in data:
-                file = self.output_mg.get_file(self.get_output_filename(document, rank))
-                self.write_record(self.adapt(document), file)
+                self.write(document, rank)
                 yield document
