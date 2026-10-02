@@ -48,6 +48,17 @@ def test_warc_reader_keeps_only_html_responses(tmp_path):
     assert "caf" in docs[1].text
 
 
+def test_truncated_archive_keeps_complete_records_and_is_counted(tmp_path):
+    path = tmp_path / "in/a.warc.gz"
+    records = [(f"https://a.example/{i}", "text/html", ARTICLE.encode(), "response") for i in range(2)]
+    write_warc(path, records)
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) - 200])
+    reader = WarcReader(tmp_path / "in")
+    assert [doc.metadata["url"] for doc in reader()] == ["https://a.example/0"]
+    assert reader.stats.metrics["truncated_files"].total == 1
+
+
 def test_trafilatura_keeps_the_article_and_drops_boilerplate():
     text = Trafilatura().extract(ARTICLE)
     assert "The river runs through the old town" in text
