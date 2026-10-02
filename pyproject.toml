@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=25.0.1",
     "regex>=2026.9.29",
     "tldextract>=5.3.2",
+    "tokenizers>=0.23.2",
     "trafilatura>=2.2.0",
     "warcio>=1.8.1",
 ]
