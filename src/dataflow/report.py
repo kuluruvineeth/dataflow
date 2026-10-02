@@ -56,6 +56,7 @@ def save_report(rows: list[dict], logging_dir: DataFolderLike, filename: str = "
 
 
 def render_report(rows: list[dict]) -> str:
+    width = max((len(str(row["key"])) for row in rows), default=10) + 2
     lines, current = [], None
     for row in rows:
         heading = row["group"] if row["section"] == "funnel" else f"{row['section']} ({row['group']})"
@@ -63,5 +64,5 @@ def render_report(rows: list[dict]) -> str:
             lines.append(f"\n{heading}")
             current = heading
         share = f"{row['share']:7.2%}" if row["share"] is not None else ""
-        lines.append(f"  {row['key']:<28} {row['value']:>14,.0f}  {share}")
+        lines.append(f"  {row['key']:<{width}} {row['value']:>14,.0f}  {share}")
     return "\n".join(lines).lstrip("\n")

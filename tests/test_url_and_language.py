@@ -87,3 +87,23 @@ def test_language_filter_keeps_wanted_languages_above_threshold():
 def test_unknown_backend_is_rejected():
     with pytest.raises(ValueError):
         LanguageFilter(["en"], backend="nope")
+
+
+def test_fineweb_word_lists_are_normalised_and_used(tmp_path, monkeypatch):
+    lists = {
+        "banned_words.txt": "# comment\nbadword\n",
+        "soft_banned_words.txt": "",
+        "banned_subwords.txt": "two girls\n",
+    }
+
+    def fake_download(url, relative_path):
+        path = tmp_path / relative_path.rsplit("/", 1)[-1]
+        path.write_text(lists[path.name])
+        return path
+
+    monkeypatch.setattr(url_module, "cached_download", fake_download)
+    assert url_module.load_word_list("banned_subwords.txt") == {"twogirls"}
+    step = URLFilter(ut1_categories=(), fineweb_word_lists=True)
+    assert step.filter(doc_with_url("https://example.com/badword-page")) == (False, "banned_word")
+    assert step.filter(doc_with_url("https://example.com/Two-Girls-video")) == (False, "banned_subword")
+    assert step.filter(doc_with_url("https://example.com/rivers")) is True
