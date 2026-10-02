@@ -1,3 +1,4 @@
+import json
 import logging
 import zlib
 
@@ -19,21 +20,58 @@ class TruncatedRecordError(Exception):
 
 
 class WarcReader(BaseDiskReader):
+    """HTML responses from WARC files.
+
+    With `cld2_languages=True`, each page also gets `cld2_languages`: the language codes Common Crawl's CLD2 found,
+    read from the metadata record that follows the response (the same source as the index's `content_languages`).
+    """
+
     name = "warc"
 
+    def __init__(self, data_folder, cld2_languages: bool = False, **kwargs):
+        super().__init__(data_folder, **kwargs)
+        self.cld2_languages = cld2_languages
+
     def read_file(self, filepath: str) -> DocumentsPipeline:
+        pending: dict[str, dict] = {}
         with self.data_folder.open(filepath, "rb") as file:
             try:
                 for record_number, record in enumerate(ArchiveIterator(file)):
+                    if self.cld2_languages and record.rec_type == "metadata":
+                        data = pending.pop(record.rec_headers.get_header("WARC-Concurrent-To"), None)
+                        if data is not None:
+                            data["cld2_languages"] = cld2_codes(record.content_stream().read())
+                            yield from self.emit(data, filepath, data.pop("_record_number"))
+                        continue
                     data = process_record(record)
                     if data is None:
                         continue
-                    document = self.get_document_from_dict(data, filepath, record_number)
-                    if document:
-                        yield document
+                    if self.cld2_languages:
+                        data["_record_number"] = record_number
+                        pending[data["id"]] = data
+                        continue
+                    yield from self.emit(data, filepath, record_number)
             except (TruncatedRecordError, EOFError, zlib.error) as error:
                 logger.warning("stopped reading truncated archive %s: %s", filepath, error)
                 self.stat_update("truncated_files")
+        for data in pending.values():
+            data["cld2_languages"] = []
+            yield from self.emit(data, filepath, data.pop("_record_number"))
+
+    def emit(self, data: dict, filepath: str, record_number: int) -> DocumentsPipeline:
+        document = self.get_document_from_dict(data, filepath, record_number)
+        if document:
+            yield document
+
+
+def cld2_codes(metadata: bytes) -> list[str]:
+    for line in metadata.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("languages-cld2:"):
+            try:
+                return [language["code"] for language in json.loads(line.split(":", 1)[1])["languages"]]
+            except (ValueError, KeyError, TypeError):
+                return []
+    return []
 
 
 def content_type(record: ArcWarcRecord) -> str | None:

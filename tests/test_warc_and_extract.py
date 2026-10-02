@@ -93,3 +93,29 @@ def test_extraction_runs_inside_parallel_tasks(tmp_path):
     pipeline = [WarcReader(tmp_path / "in"), Trafilatura(timeout=5)]
     stats = LocalPipelineExecutor(pipeline, tmp_path / "logs", tasks=2, workers=2).run()
     assert stats.stats[1].metrics["forwarded"].total == 2
+
+
+def test_cld2_languages_come_from_the_metadata_record(tmp_path):
+    path = tmp_path / "warc/a.warc.gz"
+    path.parent.mkdir(parents=True)
+    with open(path, "wb") as file:
+        writer = WARCWriter(file, gzip=True)
+        for url, metadata in [
+            ("https://a.com/", b'languages-cld2: {"languages":[{"code":"te"},{"code":"en"}]}\n'),
+            ("https://b.com/", None),
+        ]:
+            http = StatusAndHeaders("200 OK", [("Content-Type", "text/html")], protocol="HTTP/1.1")
+            response = writer.create_warc_record(url, "response", payload=BytesIO(ARTICLE.encode()), http_headers=http)
+            writer.write_record(response)
+            if metadata:
+                concurrent = {"WARC-Concurrent-To": response.rec_headers.get_header("WARC-Record-ID")}
+                record = writer.create_warc_record(
+                    url, "metadata", payload=BytesIO(metadata), warc_headers_dict=concurrent
+                )
+                writer.write_record(record)
+    documents = list(WarcReader(tmp_path / "warc", cld2_languages=True).run())
+    assert {d.metadata["url"]: d.metadata["cld2_languages"] for d in documents} == {
+        "https://a.com/": ["te", "en"],
+        "https://b.com/": [],
+    }
+    assert "cld2_languages" not in next(WarcReader(tmp_path / "warc").run()).metadata
