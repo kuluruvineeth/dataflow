@@ -1,7 +1,13 @@
 import logging
+import multiprocessing
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from copy import deepcopy
+from itertools import repeat
+
+import cloudpickle
 
 from dataflow.data import DocumentsPipeline
 from dataflow.io import DataFolderLike, get_datafolder
@@ -11,6 +17,10 @@ from dataflow.utils.stats import PipelineStats
 logger = logging.getLogger(__name__)
 
 Pipeline = list[PipelineStep | Callable[..., DocumentsPipeline] | Sequence]
+
+
+def _run_rank(executor: bytes, rank: int) -> None:
+    cloudpickle.loads(executor)._run_for_rank(rank)
 
 
 class PipelineExecutor(ABC):
@@ -43,6 +53,22 @@ class PipelineExecutor(ABC):
         self.save_rank_stats(rank)
         self.mark_rank_as_completed(rank)
         logger.info("rank %d completed", rank)
+
+    def run_ranks(self, ranks: list[int], workers: int, start_method: str = "spawn") -> None:
+        if workers == 1:
+            pipeline = self.pipeline
+            try:
+                for rank in ranks:
+                    self.pipeline = deepcopy(pipeline)
+                    self._run_for_rank(rank)
+            finally:
+                self.pipeline = pipeline
+            return
+        ctx = multiprocessing.get_context(start_method)
+        executor = cloudpickle.dumps(self)
+        with ProcessPoolExecutor(min(workers, len(ranks)), mp_context=ctx) as pool:
+            for _ in pool.map(_run_rank, repeat(executor), ranks):
+                pass
 
     def save_rank_stats(self, rank: int) -> None:
         stats = PipelineStats([step.stats for step in self.pipeline if isinstance(step, PipelineStep)])
