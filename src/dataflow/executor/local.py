@@ -31,6 +31,7 @@ class LocalPipelineExecutor(PipelineExecutor):
         if skipped := self.tasks - len(ranks):
             logger.info("skipping %d already completed tasks", skipped)
         if ranks:
+            self.write_run_info(workers=self.workers)
             self.run_ranks(ranks, self.workers, self.start_method)
         stats = self.merge_stats()
         logger.info("stats for all %d tasks:\n%s", self.tasks, stats)

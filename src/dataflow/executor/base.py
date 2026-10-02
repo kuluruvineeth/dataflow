@@ -1,7 +1,8 @@
+import json
 import logging
 import multiprocessing
+import time
 from abc import ABC, abstractmethod
-from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
@@ -10,6 +11,7 @@ from itertools import repeat
 import cloudpickle
 
 from dataflow.data import DocumentsPipeline
+from dataflow.executor.progress import ProgressReporter
 from dataflow.io import DataFolderLike, get_datafolder
 from dataflow.pipeline.base import PipelineStep
 from dataflow.utils.stats import PipelineStats
@@ -24,6 +26,8 @@ def _run_rank(executor: bytes, rank: int) -> None:
 
 
 class PipelineExecutor(ABC):
+    progress_interval: float = 30
+
     def __init__(self, pipeline: Pipeline, logging_dir: DataFolderLike, skip_completed: bool = True):
         self.pipeline = pipeline
         self.logging_dir = get_datafolder(logging_dir)
@@ -40,19 +44,26 @@ class PipelineExecutor(ABC):
         if self.is_rank_completed(rank):
             logger.info("rank %d already completed, skipping", rank)
             return
-        data = None
-        for step in self.pipeline:
-            if callable(step):
-                data = step(data, rank, self.world_size)
-            elif isinstance(step, Sequence) and not isinstance(step, str):
-                data = step
-            else:
-                raise ValueError(f"not a pipeline step: {step!r}")
-        if data is not None:
-            deque(data, maxlen=0)
-        self.save_rank_stats(rank)
+        stats = [step.stats for step in self.pipeline if isinstance(step, PipelineStep)]
+        with ProgressReporter(self.logging_dir, rank, stats, self.progress_interval) as progress:
+            data = None
+            for step in self.pipeline:
+                if callable(step):
+                    data = step(data, rank, self.world_size)
+                elif isinstance(step, Sequence) and not isinstance(step, str):
+                    data = step
+                else:
+                    raise ValueError(f"not a pipeline step: {step!r}")
+            for _ in data or ():
+                progress.documents += 1
+            self.save_rank_stats(rank)
         self.mark_rank_as_completed(rank)
         logger.info("rank %d completed", rank)
+
+    def write_run_info(self, **extra) -> None:
+        info = {"executor": type(self).__name__, "tasks": self.world_size, "started": time.time(), **extra}
+        with self.logging_dir.open("run.json", "w") as file:
+            json.dump(info, file)
 
     def run_ranks(self, ranks: list[int], workers: int, start_method: str = "spawn") -> None:
         if workers == 1:

@@ -82,7 +82,8 @@ def test_rerun_launches_only_missing_ranks(tmp_path):
 
 def test_records_minutes_and_cost(tmp_path):
     FakeJobs([record_rank], tmp_path, tasks=4, tasks_per_job=2).launch()
-    (record_file,) = (tmp_path / "jobs").iterdir()
+    (record_file,) = (tmp_path / "jobs").glob("*.json")
+    assert sorted(path.stem for path in (tmp_path / "jobs/launched").iterdir()) == ["job-0", "job-1"]
     records = json.loads(record_file.read_text())
     assert [record["id"] for record in records] == ["job-0", "job-1"]
     assert sum(record["cost_usd"] for record in records) == pytest.approx(0.06)

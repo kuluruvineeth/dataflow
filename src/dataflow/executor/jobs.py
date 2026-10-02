@@ -78,6 +78,7 @@ class JobsPipelineExecutor(PipelineExecutor):
         if skipped := self.tasks - len(ranks):
             logger.info("skipping %d already completed tasks", skipped)
         if ranks:
+            self.write_run_info(flavor=self.flavor, tasks_per_job=self.tasks_per_job)
             self.prepare()
             chunks = [ranks[i : i + self.tasks_per_job] for i in range(0, len(ranks), self.tasks_per_job)]
             self.record_jobs(self.run_chunks(chunks))
@@ -101,6 +102,7 @@ class JobsPipelineExecutor(PipelineExecutor):
             while pending and len(running) < limit:
                 index, ranks = pending.popleft()
                 job_id = self.submit(ranks)
+                self.record_launch(job_id, ranks)
                 attempts[index] += 1
                 running[job_id] = (index, ranks)
                 logger.info("job %s: ranks %s (attempt %d)", job_id, ranks, attempts[index])
@@ -116,6 +118,10 @@ class JobsPipelineExecutor(PipelineExecutor):
                 if missing and attempts[index] <= self.max_retries:
                     pending.append((index, missing))
         return ended
+
+    def record_launch(self, job_id: str, ranks: list[int]) -> None:
+        with self.logging_dir.open(f"jobs/launched/{job_id}.json", "w") as file:
+            json.dump({"id": job_id, "ranks": ranks, "flavor": self.flavor, "launched": time.time()}, file)
 
     def prepare(self) -> None:
         wheel = build_wheel()
