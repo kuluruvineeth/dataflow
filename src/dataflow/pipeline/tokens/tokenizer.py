@@ -82,26 +82,37 @@ class DocumentTokenizer(PipelineStep):
                 total += length
                 new_ends.append(total)
         self.output_folder.rm(source)
-        with self.output_folder.open(f"{target}.index", "wb") as index:
-            index.write(np.array(new_ends, dtype="<u8").tobytes())
         meta = {
             "tokenizer": self.tokenizer_name_or_path,
             "token_bytes": dtype.itemsize,
-            "documents": len(new_ends),
-            "tokens": total,
+            "eos_token_id": self.tokenizer.token_to_id(self.eos_token),
         }
-        with self.output_folder.open(f"{target}.meta", "w") as file:
-            json.dump(meta, file)
+        write_index_and_meta(self.output_folder, target, new_ends, meta)
+
+
+def write_index_and_meta(folder: DataFolder, filename: str, ends: list[int], meta: dict) -> None:
+    with folder.open(f"{filename}.index", "wb") as index:
+        index.write(np.array(ends, dtype="<u8").tobytes())
+    with folder.open(f"{filename}.meta", "w") as file:
+        json.dump({**meta, "documents": len(ends), "tokens": int(ends[-1]) if len(ends) else 0}, file)
+
+
+def read_meta(folder: DataFolder, filename: str) -> dict:
+    with folder.open(f"{filename}.meta", "r") as file:
+        return json.load(file)
+
+
+def read_ends(folder: DataFolder, filename: str) -> np.ndarray:
+    with folder.open(f"{filename}.index", "rb") as file:
+        return np.frombuffer(file.read(), dtype="<u8").astype(np.int64)
 
 
 def read_tokenized(folder: DataFolderLike, filename: str) -> list[np.ndarray]:
     folder: DataFolder = get_datafolder(folder)
-    with folder.open(f"{filename}.meta", "r") as file:
-        dtype = np.dtype(f"<u{json.load(file)['token_bytes']}")
+    dtype = np.dtype(f"<u{read_meta(folder, filename)['token_bytes']}")
     with folder.open(filename, "rb") as file:
         tokens = np.frombuffer(file.read(), dtype=dtype)
-    with folder.open(f"{filename}.index", "rb") as file:
-        ends = np.frombuffer(file.read(), dtype="<u8")
+    ends = read_ends(folder, filename)
     if not len(ends):
         return []
-    return np.split(tokens, ends[:-1].astype(np.int64))
+    return np.split(tokens, ends[:-1])

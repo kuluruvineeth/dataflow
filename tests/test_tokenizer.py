@@ -51,7 +51,14 @@ def test_documents_round_trip_in_order_without_shuffle(tmp_path, tokenizer_file)
     docs = read_tokenized(tmp_path, "00000.ds")
     assert decode(tokenizer_file, docs) == TEXTS
     meta = json.loads((tmp_path / "00000.ds.meta").read_text())
-    assert meta == {"tokenizer": tokenizer_file, "token_bytes": 2, "documents": 4, "tokens": sum(map(len, docs))}
+    eos = Tokenizer.from_file(tokenizer_file).token_to_id("<|endoftext|>")
+    assert meta == {
+        "tokenizer": tokenizer_file,
+        "token_bytes": 2,
+        "eos_token_id": eos,
+        "documents": 4,
+        "tokens": sum(map(len, docs)),
+    }
     assert step.stats.metrics["tokens"].total == meta["tokens"]
     assert not (tmp_path / "00000_unshuffled.ds").exists()
 
