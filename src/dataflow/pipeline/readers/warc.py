@@ -11,6 +11,7 @@ from dataflow.pipeline.readers.base import BaseDiskReader
 logger = logging.getLogger(__name__)
 
 HTML_TYPES = {"text/html", "application/xhtml+xml"}
+POLICY_HEADERS = ("X-Robots-Tag", "TDM-Reservation", "Content-Usage")
 
 
 class TruncatedRecordError(Exception):
@@ -61,9 +62,13 @@ def process_record(record: ArcWarcRecord) -> dict | None:
     html = decode(content)
     if not html:
         return None
-    return {
+    data = {
         "text": html,
         "id": record.rec_headers.get_header("WARC-Record-ID"),
         "url": record.rec_headers.get_header("WARC-Target-URI"),
         "date": record.rec_headers.get_header("WARC-Date"),
     }
+    headers = {name: value for name in POLICY_HEADERS if (value := record.http_headers.get_header(name))}
+    if headers:
+        data["http_headers"] = headers
+    return data
