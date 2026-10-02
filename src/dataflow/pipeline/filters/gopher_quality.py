@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from dataflow.data import Document
 from dataflow.pipeline.filters.base import BaseFilter, FilterResult
 from dataflow.pipeline.writers.base import DiskWriter
@@ -21,6 +23,7 @@ class GopherQualityFilter(BaseFilter):
         min_alpha_words_ratio: float | None = 0.8,
         min_stop_words: int | None = 2,
         stop_words: list[str] | None = None,
+        word_splitter: Callable[[str], list[str]] = split_words,
         exclusion_writer: DiskWriter | None = None,
     ):
         super().__init__(exclusion_writer)
@@ -34,10 +37,11 @@ class GopherQualityFilter(BaseFilter):
         self.min_alpha_words_ratio = min_alpha_words_ratio
         self.min_stop_words = min_stop_words
         self.stop_words = set(STOP_WORDS if stop_words is None else stop_words)
+        self.word_splitter = word_splitter
 
     def filter(self, document: Document) -> FilterResult:
         text = document.text
-        words = split_words(text)
+        words = self.word_splitter(text)
         if not words:
             return False, "gopher_short_doc"
         content_words = [word for word in words if any(char not in PUNCTUATION_SET for char in word)]
