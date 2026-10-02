@@ -27,6 +27,7 @@ class ParquetWriter(DiskWriter):
         batch_size: int = 1000,
         schema: pa.Schema | None = None,
         content_defined_chunking: bool = True,
+        write_page_index: bool = True,
     ):
         super().__init__(output_folder, output_filename, compression=None, mode="wb")
         self.compression = compression
@@ -34,6 +35,7 @@ class ParquetWriter(DiskWriter):
         self.batch_size = batch_size
         self.schema = schema
         self.content_defined_chunking = content_defined_chunking
+        self.write_page_index = write_page_index
         self._buffers: dict[IO, list[dict]] = defaultdict(list)
         self._writers: dict[IO, pq.ParquetWriter] = {}
 
@@ -56,6 +58,7 @@ class ParquetWriter(DiskWriter):
                 compression=self.compression,
                 compression_level=self.compression_level,
                 use_content_defined_chunking=self.content_defined_chunking,
+                write_page_index=self.write_page_index,
             )
         schema = self._writers[file].schema
         unknown = sorted({key for row in rows for key in row} - set(schema.names))
