@@ -7,7 +7,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-RETRY_STATUSES = {429, 500, 502, 503, 504}
+RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+USER_AGENT = "dataflow/0.1 (+https://github.com/kuluruvineeth/dataflow)"
+
+
+def http_client() -> httpx.Client:
+    return httpx.Client(timeout=120, follow_redirects=True, headers={"User-Agent": USER_AGENT})
 
 
 class RateLimiter:
@@ -27,10 +32,52 @@ class RateLimiter:
             time.sleep(delay)
 
 
+def request(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    headers: dict | None = None,
+    limiter: RateLimiter | None = None,
+    retries: int = 6,
+    backoff: float = 10.0,
+) -> httpx.Response:
+    """One HTTP request, rate-limited, retried on 403, 429, 5xx and network errors with back-off of at least `backoff`
+    seconds. Common Crawl's CDN answers 403 or 503 when it is asked too fast, and asks for 10 s after either."""
+    for attempt in range(retries + 1):
+        if limiter:
+            limiter.wait()
+        try:
+            response = client.request(method, url, headers=headers)
+            if response.status_code not in RETRY_STATUSES:
+                response.raise_for_status()
+                return response
+            error = f"HTTP {response.status_code}"
+        except httpx.TransportError as exception:
+            error = type(exception).__name__
+        if attempt == retries:
+            raise OSError(f"{url}: {error} after {retries} retries")
+        logger.warning("%s: %s, retrying", url, error)
+        time.sleep(backoff * 2**attempt)
+    raise AssertionError("unreachable")
+
+
+def get_range(
+    url: str,
+    start: int,
+    end: int,
+    client: httpx.Client,
+    limiter: RateLimiter | None = None,
+    headers: dict | None = None,
+    **kwargs,
+) -> bytes:
+    """Bytes `start` to `end` (exclusive) of `url`."""
+    headers = {**(headers or {}), "Range": f"bytes={start}-{end - 1}"}
+    return request(client, "GET", url, headers, limiter, **kwargs).content
+
+
 class HttpRangeFile(io.RawIOBase):
     """A read-only, seekable file over HTTP range requests: one request per read, nothing cached, every request
-    rate-limited, and transient failures retried with back-off of at least `backoff` seconds (Common Crawl asks for
-    10 s after a 503)."""
+    rate-limited and retried."""
 
     def __init__(
         self,
@@ -42,7 +89,7 @@ class HttpRangeFile(io.RawIOBase):
     ):
         self.url = url
         self.limiter = limiter
-        self.client = client or httpx.Client(timeout=120, follow_redirects=True)
+        self.client = client or http_client()
         self.retries = retries
         self.backoff = backoff
         self.position = 0
@@ -50,23 +97,8 @@ class HttpRangeFile(io.RawIOBase):
         self.size = int(self.request("HEAD").headers["content-length"])
 
     def request(self, method: str, headers: dict | None = None) -> httpx.Response:
-        for attempt in range(self.retries + 1):
-            if self.limiter:
-                self.limiter.wait()
-            self.requests += 1
-            try:
-                response = self.client.request(method, self.url, headers=headers)
-                if response.status_code not in RETRY_STATUSES:
-                    response.raise_for_status()
-                    return response
-                error = f"HTTP {response.status_code}"
-            except httpx.TransportError as exception:
-                error = type(exception).__name__
-            if attempt == self.retries:
-                raise OSError(f"{self.url}: {error} after {self.retries} retries")
-            logger.warning("%s: %s, retrying", self.url, error)
-            time.sleep(self.backoff * 2**attempt)
-        raise AssertionError("unreachable")
+        self.requests += 1
+        return request(self.client, method, self.url, headers, self.limiter, self.retries, self.backoff)
 
     def readable(self) -> bool:
         return True

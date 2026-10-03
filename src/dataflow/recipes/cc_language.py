@@ -15,7 +15,7 @@ COLLECTIONS = "https://index.commoncrawl.org/collinfo.json"
 LANGUAGES_CSV = "https://raw.githubusercontent.com/commoncrawl/cc-crawl-statistics/master/plots/languages.csv"
 FIRST_TAGGED = "CC-MAIN-2018-39"
 HF_MIRROR = "hf://buckets/commoncrawl/commoncrawl/"
-POLITE_REQUESTS_PER_SECOND = 10.0
+POLITE_REQUESTS_PER_SECOND = 5.0
 
 
 def tagged_crawls() -> list[str]:
@@ -29,6 +29,12 @@ def mirrored_crawls() -> set[str]:
     return {path.rstrip("/").rsplit("/", 1)[-1] for path in folder.ls("", detail=False)}
 
 
+def by_source(crawls: list[str]) -> list[tuple[str, list[str]]]:
+    """Crawls mirrored in the HF bucket are read there; the rest from Common Crawl."""
+    mirror = mirrored_crawls()
+    return [(HF_MIRROR, [c for c in crawls if c in mirror]), (COMMON_CRAWL, [c for c in crawls if c not in mirror])]
+
+
 def published_counts(language: str) -> dict[str, int]:
     """Pages per crawl whose primary language is `language`, from Common Crawl's crawl statistics."""
     rows = csv.DictReader(io.StringIO(httpx.get(LANGUAGES_CSV, timeout=60).text))
@@ -38,11 +44,7 @@ def published_counts(language: str) -> dict[str, int]:
 def selection_table(language: str, output: str, crawls: list[str], executor_for, files_per_task: int = 10) -> None:
     """One selection table per crawl under `output/selection`; crawls on the HF mirror are read there, the rest from
     Common Crawl at its polite request rate, shared by all concurrent processes."""
-    mirror = mirrored_crawls()
-    for base, group in (
-        (HF_MIRROR, [c for c in crawls if c in mirror]),
-        (COMMON_CRAWL, [c for c in crawls if c not in mirror]),
-    ):
+    for base, group in by_source(crawls):
         if not group:
             continue
         paths = [path for crawl in group for path in index_files(crawl, base)]

@@ -22,7 +22,11 @@ Pipeline = list[PipelineStep | Callable[..., DocumentsPipeline] | Sequence]
 
 
 def _run_rank(executor: bytes, rank: int) -> None:
-    cloudpickle.loads(executor)._run_for_rank(rank)
+    try:
+        cloudpickle.loads(executor)._run_for_rank(rank)
+    except Exception as error:
+        # some exceptions (httpx's among them) cannot be unpickled in the parent, which breaks the whole pool
+        raise RuntimeError(f"rank {rank} failed: {type(error).__name__}: {error}") from None
 
 
 class PipelineExecutor(ABC):
