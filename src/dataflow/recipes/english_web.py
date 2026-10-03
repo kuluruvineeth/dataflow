@@ -131,6 +131,7 @@ def main() -> None:
     parser.add_argument("--tasks", type=int, default=1)
     parser.add_argument("--glob", dest="glob_pattern", help="only read WARC files matching this pattern")
     parser.add_argument("--paths-from", help="read the WARC files listed in this warc.paths.gz, relative to the input")
+    parser.add_argument("--max-files", type=int, help="only the first N files of --paths-from (for trial runs)")
     parser.add_argument("--stages", nargs="*", default=list(STAGES), choices=STAGES)
     parser.add_argument("--workers", type=int, default=-1, help="local worker processes")
     parser.add_argument("--jobs", action="store_true", help="run each stage on Hugging Face Jobs")
@@ -155,7 +156,7 @@ def main() -> None:
         )  # fmt: skip
     else:
         executor = local(args.workers)
-    paths = warc_paths(args.paths_from) if args.paths_from else None
+    paths = warc_paths(args.paths_from)[: args.max_files] if args.paths_from else None
     results = english_web(
         args.input_folder, args.output_folder, executor, tasks=args.tasks, glob_pattern=args.glob_pattern,
         paths=paths, stages=tuple(args.stages), keep_removed=not args.no_removed,

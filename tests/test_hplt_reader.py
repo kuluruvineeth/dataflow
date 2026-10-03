@@ -47,3 +47,12 @@ def test_counting_needs_only_the_metadata(tmp_path):
     reader = HpltPoolReader(["wide00002/1"], read_text=False, base=str(tmp_path))
     assert list(reader.run()) == []
     assert reader.stats.metrics["kept"].total == 2
+
+
+def test_the_batch_list_is_frozen_on_the_first_run(tmp_path, monkeypatch):
+    from dataflow.recipes import hplt_language
+
+    monkeypatch.setattr(hplt_language, "pool_batches", lambda: ["wide00002/1", "wide00002/2"])
+    assert hplt_language.frozen_batches(str(tmp_path)) == ["wide00002/1", "wide00002/2"]
+    monkeypatch.setattr(hplt_language, "pool_batches", lambda: ["something/else"])
+    assert hplt_language.frozen_batches(str(tmp_path)) == ["wide00002/1", "wide00002/2"]
