@@ -1,9 +1,6 @@
-import heapq
 import struct
-from collections.abc import Iterator
-from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import BinaryIO
 
 import numpy as np
 
@@ -105,12 +102,26 @@ class MinhashDedupSignature(PipelineStep):
         yield from ()
 
 
-def read_bands(file: BinaryIO, origin: int, config: MinhashConfig) -> Iterator[tuple[tuple[int, ...], int, int]]:
-    for *band, index in read_tuples(file, band_format(config)):
-        yield tuple(band), origin, index
+BAND_MULTIPLIER = np.uint64(0x9E3779B97F4A7C15)
+
+
+def band_keys(data: bytes, config: MinhashConfig) -> tuple[np.ndarray, np.ndarray]:
+    """One 64-bit key per band (its hashes combined) and the document index, from a signature file's bytes."""
+    records = np.frombuffer(data, dtype=np.dtype([("band", "<u8", (config.hashes_per_bucket,)), ("index", "<u4")]))
+    keys = records["band"][:, 0].copy()
+    for column in range(1, config.hashes_per_bucket):
+        keys = keys * BAND_MULTIPLIER + records["band"][:, column]
+    return keys, records["index"].copy()
 
 
 class MinhashDedupBuckets(PipelineStep):
+    """Pairs of documents that share a band, for one bucket.
+
+    Every task's signatures for this bucket are read (in parallel), each band reduced to one 64-bit key, and the keys
+    sorted together with their origin; equal neighbours are candidate duplicates. Plain arrays of 16 bytes per
+    document, so a whole dump fits in memory, instead of one open stream per task.
+    """
+
     type = "Dedup"
     name = "minhash buckets"
 
@@ -119,27 +130,39 @@ class MinhashDedupBuckets(PipelineStep):
         input_folder: DataFolderLike,
         output_folder: DataFolderLike,
         config: MinhashConfig | None = None,
+        threads: int = 16,
     ):
         self.input_folder = get_datafolder(input_folder)
         self.output_folder = get_datafolder(output_folder)
         self.config = config or MinhashConfig()
+        self.threads = threads
+
+    def read(self, path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        with self.input_folder.open(path, "rb") as file:
+            keys, indexes = band_keys(file.read(), self.config)
+        return keys, np.full(len(keys), source_rank(path), dtype=np.uint32), indexes
 
     def run(self, data: DocumentsPipeline = None, rank: int = 0, world_size: int = 1) -> DocumentsPipeline:
         if world_size != self.config.num_buckets:
             raise ValueError(f"run this step with tasks={self.config.num_buckets} (one per bucket)")
         paths = self.input_folder.list_files(subdirectory=f"bucket_{rank:03d}", glob_pattern="*.sig")
-        packer = struct.Struct(PAIR)
-        last = None
-        with ExitStack() as stack, self.output_folder.open(f"{rank:03d}.pairs", "wb") as out:
-            streams = [
-                read_bands(stack.enter_context(self.input_folder.open(path, "rb")), source_rank(path), self.config)
-                for path in paths
-            ]
-            for band, origin, index in heapq.merge(*streams):
-                if last is not None and last[0] == band:
-                    out.write(packer.pack(last[1], last[2], origin, index))
-                    self.stat_update("pairs")
-                last = (band, origin, index)
+        with ThreadPoolExecutor(self.threads) as pool:
+            parts = list(pool.map(self.read, paths))
+        keys, origins, indexes = (
+            np.concatenate([part[i] for part in parts]) if parts else np.empty(0) for i in range(3)
+        )
+        order = np.lexsort((indexes, origins, keys))
+        keys, origins, indexes = keys[order], origins[order], indexes[order]
+        same = np.nonzero(keys[1:] == keys[:-1])[0]
+        pairs = np.empty(
+            len(same), dtype=np.dtype([(name, "<u4") for name in ("rank_a", "index_a", "rank_b", "index_b")])
+        )
+        pairs["rank_a"], pairs["index_a"] = origins[same], indexes[same]
+        pairs["rank_b"], pairs["index_b"] = origins[same + 1], indexes[same + 1]
+        with self.output_folder.open(f"{rank:03d}.pairs", "wb") as out:
+            out.write(pairs.tobytes())
+        self.stat_update("signatures", value=len(keys))
+        self.stat_update("pairs", value=len(pairs))
         yield from ()
 
 
