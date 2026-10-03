@@ -3,11 +3,13 @@ import csv
 import io
 import json
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
 from dataflow.executor.local import LocalPipelineExecutor
+from dataflow.executor.remote import launch_driver
 from dataflow.io import get_datafolder
 from dataflow.sources.ccindex import COMMON_CRAWL, LanguageSelector, index_files
 
@@ -110,9 +112,14 @@ def main() -> None:
     parser.add_argument("--crawls", nargs="*", help="default: every language-tagged crawl")
     parser.add_argument("--jobs", action="store_true", help="run on Hugging Face Jobs instead of locally")
     parser.add_argument("--compare-only", action="store_true")
+    parser.add_argument("--driver", metavar="COMMIT", help="run this command itself as a Job, from this commit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if args.driver:
+        arguments = [argument for argument in sys.argv[1:] if argument not in ("--driver", args.driver)]
+        print(launch_driver("dataflow.recipes.cc_language", arguments, args.driver, name="cc-language-driver"))
+        return
     if not args.compare_only:
         crawls = args.crawls or tagged_crawls()
         selection_table(args.language, args.output, crawls, jobs() if args.jobs else local())

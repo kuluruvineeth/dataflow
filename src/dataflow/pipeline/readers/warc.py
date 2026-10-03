@@ -34,7 +34,7 @@ class WarcReader(BaseDiskReader):
 
     def read_file(self, filepath: str) -> DocumentsPipeline:
         pending: dict[str, dict] = {}
-        with self.data_folder.open(filepath, "rb") as file:
+        with self.open_input(filepath) as file:
             try:
                 for record_number, record in enumerate(ArchiveIterator(file)):
                     if self.cld2_languages and record.rec_type == "metadata":

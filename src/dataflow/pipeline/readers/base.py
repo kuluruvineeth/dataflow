@@ -1,9 +1,12 @@
 import logging
 from abc import abstractmethod
+from contextlib import AbstractContextManager
+from typing import IO
 
 from dataflow.data import Document, DocumentsPipeline
 from dataflow.io import DataFolderLike, get_datafolder
 from dataflow.pipeline.base import PipelineStep
+from dataflow.sources.http import open_url
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +23,16 @@ class BaseDiskReader(PipelineStep):
         limit: int = -1,
         recursive: bool = True,
         glob_pattern: str | None = None,
+        paths: list[str] | None = None,
     ):
-        self.data_folder = get_datafolder(data_folder)
+        """`paths` lists the files explicitly instead of listing `data_folder`; with an http(s) `data_folder` it is
+        required, and each file is streamed in a single request."""
+        remote = isinstance(data_folder, str) and data_folder.startswith(("http://", "https://"))
+        if remote and paths is None:
+            raise ValueError("an http(s) data_folder cannot be listed; pass paths")
+        self.base_url = data_folder.rstrip("/") + "/" if remote else None
+        self.data_folder = None if remote else get_datafolder(data_folder)
+        self.paths = paths
         self.text_key = text_key
         self.id_key = id_key
         self.default_metadata = default_metadata or {}
@@ -31,6 +42,11 @@ class BaseDiskReader(PipelineStep):
 
     @abstractmethod
     def read_file(self, filepath: str) -> DocumentsPipeline: ...
+
+    def open_input(self, filepath: str) -> AbstractContextManager[IO]:
+        if self.base_url:
+            return open_url(self.base_url + filepath)
+        return self.data_folder.open(filepath, "rb")
 
     def adapt(self, data: dict, path: str, id_in_file: int) -> dict:
         metadata = data.pop("metadata", None) or {}
@@ -49,7 +65,12 @@ class BaseDiskReader(PipelineStep):
     def run(self, data: DocumentsPipeline = None, rank: int = 0, world_size: int = 1) -> DocumentsPipeline:
         if data:
             yield from data
-        shard = self.data_folder.get_shard(rank, world_size, recursive=self.recursive, glob_pattern=self.glob_pattern)
+        if self.paths is not None:
+            shard = self.paths[rank::world_size]
+        else:
+            shard = self.data_folder.get_shard(
+                rank, world_size, recursive=self.recursive, glob_pattern=self.glob_pattern
+            )
         if shard is None:
             raise RuntimeError(f"no files found in {self.data_folder.path}")
         read = 0

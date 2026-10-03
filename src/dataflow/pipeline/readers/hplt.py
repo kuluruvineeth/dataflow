@@ -10,28 +10,9 @@ import zstandard
 from dataflow.data import Document, DocumentsPipeline
 from dataflow.io import get_datafolder
 from dataflow.pipeline.base import PipelineStep
+from dataflow.sources.http import ResponseStream
 
 HPLT_POOL = "https://data.hplt-project.org/four/pool/"
-
-
-class ResponseStream(io.RawIOBase):
-    """A streamed HTTP body as a file, so a decompressor can read it as it arrives."""
-
-    def __init__(self, response: httpx.Response):
-        self.chunks = response.iter_raw(1 << 20)
-        self.pending = b""
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        while not self.pending:
-            self.pending = next(self.chunks, b"")
-            if not self.pending:
-                return 0
-        size = min(len(buffer), len(self.pending))
-        buffer[:size], self.pending = self.pending[:size], self.pending[size:]
-        return size
 
 
 class HpltPoolReader(PipelineStep):

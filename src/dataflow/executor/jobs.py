@@ -90,7 +90,8 @@ class JobsPipelineExecutor(PipelineExecutor):
 
     def incomplete(self, ranks: list[int]) -> list[int]:
         self.logging_dir.fs.invalidate_cache()
-        return [rank for rank in ranks if not self.is_rank_completed(rank)]
+        done = self.completed_ranks()
+        return [rank for rank in ranks if rank not in done]
 
     def run_chunks(self, chunks: list[list[int]]) -> dict[str, datetime]:
         pending = deque(enumerate(chunks))

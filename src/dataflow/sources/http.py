@@ -2,6 +2,9 @@ import io
 import logging
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import IO
 
 import httpx
 
@@ -127,3 +130,45 @@ class HttpRangeFile(io.RawIOBase):
         data = self.read(len(buffer))
         buffer[: len(data)] = data
         return len(data)
+
+
+class ResponseStream(io.RawIOBase):
+    """A streamed HTTP body as a file, so a reader or decompressor can consume it as it arrives."""
+
+    def __init__(self, response: httpx.Response):
+        self.chunks = response.iter_raw(1 << 20)
+        self.pending = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        while not self.pending:
+            self.pending = next(self.chunks, b"")
+            if not self.pending:
+                return 0
+        size = min(len(buffer), len(self.pending))
+        buffer[:size], self.pending = self.pending[:size], self.pending[size:]
+        return size
+
+
+@contextmanager
+def open_url(url: str, limiter: RateLimiter | None = None, retries: int = 6, backoff: float = 10.0) -> Iterator[IO]:
+    """A whole remote file as one streamed GET (one request, however large the file), retried until it starts."""
+    with http_client() as client:
+        for attempt in range(retries + 1):
+            if limiter:
+                limiter.wait()
+            try:
+                with client.stream("GET", url) as response:
+                    if response.status_code not in RETRY_STATUSES:
+                        response.raise_for_status()
+                        yield io.BufferedReader(ResponseStream(response), 1 << 20)
+                        return
+                    error = f"HTTP {response.status_code}"
+            except httpx.TransportError as exception:
+                error = type(exception).__name__
+            if attempt == retries:
+                raise OSError(f"{url}: {error} after {retries} retries")
+            logger.warning("%s: %s, retrying", url, error)
+            time.sleep(backoff * 2**attempt)

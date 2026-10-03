@@ -4,7 +4,7 @@ import multiprocessing
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from copy import deepcopy
 from itertools import repeat
 
@@ -91,11 +91,15 @@ class PipelineExecutor(ABC):
             file.write(stats.to_json())
 
     def merge_stats(self) -> PipelineStats:
+        def read(path: str) -> PipelineStats:
+            with self.logging_dir.open(path, "r") as file:
+                return PipelineStats.from_json(file.read())
+
         merged = PipelineStats()
         if self.logging_dir.exists("stats"):
-            for path in self.logging_dir.list_files("stats"):
-                with self.logging_dir.open(path, "r") as file:
-                    merged += PipelineStats.from_json(file.read())
+            with ThreadPoolExecutor(16) as pool:
+                for stats in pool.map(read, self.logging_dir.list_files("stats")):
+                    merged += stats
         with self.logging_dir.open("stats.json", "w") as file:
             file.write(merged.to_json())
         return merged
@@ -109,5 +113,12 @@ class PipelineExecutor(ABC):
     def mark_rank_as_completed(self, rank: int) -> None:
         self.logging_dir.open(self._completion_path(rank), "w").close()
 
+    def completed_ranks(self) -> set[int]:
+        """Every completed rank, from one listing of the completions folder instead of one lookup per rank."""
+        if not self.skip_completed or not self.logging_dir.exists("completions"):
+            return set()
+        return {int(path.rsplit("/", 1)[-1]) for path in self.logging_dir.list_files(subdirectory="completions")}
+
     def get_incomplete_ranks(self) -> list[int]:
-        return [rank for rank in range(self.world_size) if not self.is_rank_completed(rank)]
+        done = self.completed_ranks()
+        return [rank for rank in range(self.world_size) if rank not in done]

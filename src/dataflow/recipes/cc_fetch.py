@@ -1,19 +1,19 @@
 import argparse
 import logging
-
-from huggingface_hub import HfApi, get_token
+from datetime import UTC, datetime
 
 from dataflow.executor.local import LocalPipelineExecutor
+from dataflow.executor.remote import schedule_daily
 from dataflow.io import get_datafolder
 from dataflow.recipes.cc_language import HF_MIRROR, POLITE_REQUESTS_PER_SECOND, by_source
 from dataflow.sources.fetch import RangeFetcher
 
-UV_IMAGE = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
 MIRROR_HTTPS = "https://huggingface.co/buckets/commoncrawl/commoncrawl/resolve/"
-SOURCE = "https://github.com/kuluruvineeth/dataflow/archive/{commit}.tar.gz"
 
 
-def fetch(selection: str, output: str, crawls: list[str] | None, executor_for, files_per_task: int = 10) -> None:
+def fetch(
+    selection: str, output: str, crawls: list[str] | None, executor_for, files_per_task: int = 10, run: str = "jobs"
+) -> None:
     """Fetch every selected record into WARC files under `output/warc`: mirrored crawls from the HF bucket, the rest
     from Common Crawl at its polite request rate, shared by all concurrent processes."""
     paths = get_datafolder(selection).list_files(glob_pattern="*/*.parquet")
@@ -31,7 +31,7 @@ def fetch(selection: str, output: str, crawls: list[str] | None, executor_for, f
             rate = POLITE_REQUESTS_PER_SECOND / processes
             return [RangeFetcher(selection, f"{output}/warc", group, base, requests_per_second=rate)]
 
-        executor_for(pipeline, f"{output}/logs/{name}", -(-files // files_per_task)).run()
+        executor_for(pipeline, f"{output}/logs/{name}/{run}", -(-files // files_per_task)).run()
 
 
 def local(workers: int = 1):
@@ -54,19 +54,6 @@ def jobs(max_jobs: int = 2, workers_per_job: int = 8, tasks_per_job: int = 100, 
     return executor_for
 
 
-def schedule(selection: str, output: str, commit: str, crawls: list[str] | None = None, flavor: str = "cpu-basic"):
-    """A daily job that continues the fetch for up to 23 hours, never two at once; it skips what is already fetched,
-    so it runs until everything is, for as many days as that takes. Runs this repository's code at `commit`."""
-    command = ["uv", "run", "--with", f"dataflow @ {SOURCE.format(commit=commit)}", "python", "-m",
-               "dataflow.recipes.cc_fetch", selection, output]  # fmt: skip
-    if crawls:
-        command += ["--crawls", *crawls]
-    return HfApi().create_scheduled_job(
-        image=UV_IMAGE, command=command, schedule="0 3 * * *", concurrency=False, timeout="23h", flavor=flavor,
-        secrets={"HF_TOKEN": get_token()}, name="cc-fetch",
-    )  # fmt: skip
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch selected Common Crawl records by byte range into WARC files")
     parser.add_argument("selection", help="selection tables written by dataflow.recipes.cc_language")
@@ -78,9 +65,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if args.schedule:
-        print(schedule(args.selection, args.output, args.schedule, args.crawls))
+        arguments = [args.selection, args.output, *(["--crawls", *args.crawls] if args.crawls else [])]
+        print(schedule_daily("dataflow.recipes.cc_fetch", arguments, args.schedule, name="cc-fetch"))
         return
-    fetch(args.selection, args.output, args.crawls, jobs() if args.jobs else local())
+    # the selection grows between runs, so task numbers move: each local run keeps its own completion markers, and
+    # files already fetched are skipped by the fetcher itself
+    run = "jobs" if args.jobs else datetime.now(UTC).strftime("%Y-%m-%d-%H%M")
+    fetch(args.selection, args.output, args.crawls, jobs() if args.jobs else local(), run=run)
 
 
 if __name__ == "__main__":
