@@ -4,9 +4,8 @@ import multiprocessing
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from itertools import repeat
 
 import cloudpickle
 
@@ -81,9 +80,16 @@ class PipelineExecutor(ABC):
             return
         ctx = multiprocessing.get_context(start_method)
         executor = cloudpickle.dumps(self)
+        failures = []
         with ProcessPoolExecutor(min(workers, len(ranks)), mp_context=ctx) as pool:
-            for _ in pool.map(_run_rank, repeat(executor), ranks):
-                pass
+            for future in as_completed(pool.submit(_run_rank, executor, rank) for rank in ranks):
+                try:
+                    future.result()
+                except Exception as error:
+                    logger.error("%s", error)
+                    failures.append(error)
+        if failures:
+            raise RuntimeError(f"{len(failures)} of {len(ranks)} ranks failed, first: {failures[0]}")
 
     def save_rank_stats(self, rank: int) -> None:
         stats = PipelineStats([step.stats for step in self.pipeline if isinstance(step, PipelineStep)])

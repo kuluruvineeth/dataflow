@@ -45,9 +45,7 @@ class HpltPoolReader(PipelineStep):
     def lines(self, stack: ExitStack, path: str) -> Iterator[str]:
         if self.base.startswith("https://"):
             client = stack.enter_context(httpx.Client(timeout=300, follow_redirects=True))
-            response = stack.enter_context(client.stream("GET", self.base + path))
-            response.raise_for_status()
-            raw = ResponseStream(response)
+            raw = stack.enter_context(ResponseStream(client, self.base + path))
         else:
             raw = stack.enter_context(get_datafolder(self.base).open(path, "rb"))
         reader = zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True)

@@ -1,6 +1,6 @@
 import threading
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 
 import pytest
@@ -10,6 +10,7 @@ from warcio.warcwriter import WARCWriter
 from dataflow.executor.local import LocalPipelineExecutor
 from dataflow.pipeline.base import PipelineStep
 from dataflow.pipeline.readers import WarcReader
+from dataflow.sources.http import open_url
 
 PAGE = "<html><body><article><p>{}</p></article></body></html>"
 
@@ -50,6 +51,41 @@ def test_warc_files_stream_over_http_from_a_path_list(tmp_path, server):
         "https://b.example/",
         "https://c.example/",
     ]
+
+
+class DropsOnce(BaseHTTPRequestHandler):
+    """Serves BODY with range support; the first full request sends only part of it, then closes the connection."""
+
+    dropped = False
+
+    def do_GET(self):
+        start = int(self.headers["Range"].removeprefix("bytes=").rstrip("-")) if self.headers["Range"] else 0
+        self.send_response(206 if start else 200)
+        self.send_header("Content-Length", str(len(BODY) - start))
+        self.end_headers()
+        if not start and not DropsOnce.dropped:
+            DropsOnce.dropped = True
+            self.wfile.write(BODY[: len(BODY) // 3])
+            self.close_connection = True
+            return
+        self.wfile.write(BODY[start:])
+
+    def log_message(self, *args):
+        pass
+
+
+BODY = bytes(range(256)) * 4096
+
+
+def test_a_dropped_download_resumes_from_the_last_byte():
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), DropsOnce)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        with open_url(f"http://127.0.0.1:{httpd.server_address[1]}/file", backoff=0) as file:
+            assert file.read() == BODY
+            assert file.raw.resumes == 1
+    finally:
+        httpd.shutdown()
 
 
 def test_a_remote_folder_needs_a_path_list():
