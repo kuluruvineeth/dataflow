@@ -4,6 +4,24 @@ from dataflow.pipeline.writers.base import DiskWriter
 from dataflow.utils.lid import FastTextLID, LanguageIdentifier
 
 
+class CommonCrawlLanguageFilter(BaseFilter):
+    """Keeps pages Common Crawl's CLD2 tagged with one of `languages`, so extraction runs only on pages that can pass
+    the language filter after it. Needs `WarcReader(..., cld2_languages=True)`; WARC metadata uses two-letter codes
+    ("en", "te"). Pages with no tag are kept: CLD2 found nothing there, not another language."""
+
+    name = "cc_language"
+
+    def __init__(self, languages: list[str], exclusion_writer: DiskWriter | None = None):
+        super().__init__(exclusion_writer)
+        self.languages = set(languages)
+
+    def filter(self, document: Document) -> FilterResult:
+        tags = document.metadata.get("cld2_languages")
+        if not tags or self.languages.intersection(tags):
+            return True
+        return False, "other_language"
+
+
 class LanguageFilter(BaseFilter):
     name = "language"
 

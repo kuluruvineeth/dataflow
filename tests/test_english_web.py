@@ -1,3 +1,5 @@
+import gzip
+import json
 from io import BytesIO
 
 import pyarrow.parquet as pq
@@ -51,13 +53,22 @@ def article(topic: str, extra: str = "") -> bytes:
     return f"<html><body><article><h1>About the {topic}</h1>{paragraphs}</article></body></html>".encode()
 
 
-def write_warc(path, pages):
+def write_warc(path, pages, cld2: dict[str, list[str]] | None = None):
+    """`cld2` maps a URL to the languages Common Crawl's metadata record would give it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as file:
         writer = WARCWriter(file, gzip=True)
         for url, body in pages:
             http = StatusAndHeaders("200 OK", [("Content-Type", "text/html")], protocol="HTTP/1.1")
-            writer.write_record(writer.create_warc_record(url, "response", payload=BytesIO(body), http_headers=http))
+            response = writer.create_warc_record(url, "response", payload=BytesIO(body), http_headers=http)
+            writer.write_record(response)
+            if cld2 and url in cld2:
+                codes = ",".join(f'{{"code":"{code}"}}' for code in cld2[url])
+                payload = BytesIO(f'languages-cld2: {{"languages":[{codes}]}}\n'.encode())
+                concurrent = {"WARC-Concurrent-To": response.rec_headers.get_header("WARC-Record-ID")}
+                writer.write_record(
+                    writer.create_warc_record(url, "metadata", payload=payload, warc_headers_dict=concurrent)
+                )
 
 
 class AlwaysEnglish:
@@ -98,3 +109,34 @@ def test_the_recipe_filters_deduplicates_and_masks(tmp_path):
     contact = next(row for row in rows if row["url"] == "https://contact.example.com/")
     assert "editor@valley-news.com" not in contact["text"]
     assert list((tmp_path / "out/removed/7_minhash").rglob("*.jsonl.gz"))
+
+
+def test_pages_common_crawl_tags_as_another_language_are_not_extracted(tmp_path):
+    topics = ("river", "mountain", "harbour", "forest")
+    pages = [(f"https://{topic}.example.com/story", article(topic)) for topic in topics]
+    cld2 = {
+        "https://river.example.com/story": ["en"],
+        "https://mountain.example.com/story": ["de"],
+        "https://forest.example.com/story": ["fr", "en"],
+    }
+    write_warc(tmp_path / "warc/a.warc.gz", pages, cld2)
+
+    def kept(cc_languages, out):
+        english_web(
+            str(tmp_path / "warc"), str(tmp_path / out), executor=local(workers=1), stages=("filter",),
+            url_filter=URLFilter(ut1_categories=()), cc_languages=cc_languages,
+            language_filter=LanguageFilter(["en"], threshold=0.65, lid=AlwaysEnglish()),
+        )  # fmt: skip
+        return sorted(row["url"].split(".")[0].removeprefix("https://") for row in read_jsonl(tmp_path / out))
+
+    assert kept(("en",), "prefiltered") == ["forest", "harbour", "river"]
+    assert list((tmp_path / "prefiltered/removed/1b_cc_language").rglob("*.jsonl.gz"))
+    assert kept(None, "everything") == ["forest", "harbour", "mountain", "river"]
+
+
+def read_jsonl(out):
+    rows = []
+    for path in (out / "filtered").rglob("*.jsonl.gz"):
+        with gzip.open(path, "rt") as file:
+            rows += [json.loads(line)["metadata"] for line in file]
+    return rows

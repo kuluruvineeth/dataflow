@@ -4,7 +4,7 @@ import tarfile
 import pytest
 
 from dataflow.data import Document
-from dataflow.pipeline.filters import LanguageFilter, URLFilter
+from dataflow.pipeline.filters import CommonCrawlLanguageFilter, LanguageFilter, URLFilter
 from dataflow.pipeline.filters import url as url_module
 
 
@@ -107,3 +107,13 @@ def test_fineweb_word_lists_are_normalised_and_used(tmp_path, monkeypatch):
     assert step.filter(doc_with_url("https://example.com/badword-page")) == (False, "banned_word")
     assert step.filter(doc_with_url("https://example.com/Two-Girls-video")) == (False, "banned_subword")
     assert step.filter(doc_with_url("https://example.com/rivers")) is True
+
+
+@pytest.mark.parametrize(
+    ("tags", "kept"),
+    [(["en"], True), (["fr", "en"], True), (["de"], False), ([], True), (None, True)],
+)
+def test_common_crawl_tags_decide_before_extraction(tags, kept):
+    metadata = {} if tags is None else {"cld2_languages": tags}
+    result = CommonCrawlLanguageFilter(["en"]).filter(Document("<html>", "1", metadata))
+    assert (result is True) == kept

@@ -18,6 +18,7 @@ from dataflow.pipeline.dedup import (
 from dataflow.pipeline.extractors import Trafilatura
 from dataflow.pipeline.filters import (
     C4QualityFilter,
+    CommonCrawlLanguageFilter,
     FineWebQualityFilter,
     GopherQualityFilter,
     GopherRepetitionFilter,
@@ -65,8 +66,14 @@ def english_web(
     language_filter: LanguageFilter | None = None,
     stages: tuple[str, ...] = STAGES,
     keep_removed: bool = True,
+    cc_languages: tuple[str, ...] | None = ("en",),
 ) -> dict[str, PipelineStats]:
-    """The FineWeb recipe for English web text: filter each WARC, MinHash-deduplicate the run, mask PII."""
+    """The FineWeb recipe for English web text: filter each WARC, MinHash-deduplicate the run, mask PII.
+
+    One addition to FineWeb: before extraction, pages Common Crawl's CLD2 tagged with none of `cc_languages` are
+    dropped (`None` turns this off). On 32K pages of CC-MAIN-2025-26 it skipped a third of the extractions and lost
+    0.3% of the English pages kept without it.
+    """
     executor = executor or local()
     config = MinhashConfig()
     stats: dict[str, PipelineStats] = {}
@@ -81,13 +88,17 @@ def english_web(
         if name in stages:
             stats[name] = executor(pipeline, f"{output_folder}/logs/{name}", stage_tasks, **overrides).run()
 
+    prefilter = []
+    if cc_languages:
+        prefilter = [CommonCrawlLanguageFilter(list(cc_languages), exclusion_writer=removed("1b_cc_language"))]
     filtered, signatures = f"{output_folder}/filtered", f"{output_folder}/minhash/signatures"
     buckets, clusters = f"{output_folder}/minhash/buckets", f"{output_folder}/minhash/clusters"
     run(
         "filter",
         [
-            WarcReader(input_folder, glob_pattern=glob_pattern, paths=paths),
+            WarcReader(input_folder, glob_pattern=glob_pattern, paths=paths, cld2_languages=bool(cc_languages)),
             url_filter or URLFilter(fineweb_word_lists=True, exclusion_writer=removed("1_url")),
+            *prefilter,
             Trafilatura(favour_precision=True, timeout=5),
             language_filter or LanguageFilter(["en"], threshold=0.65, exclusion_writer=removed("2_language")),
             GopherRepetitionFilter(exclusion_writer=removed("3_gopher_repetition")),
@@ -142,6 +153,7 @@ def main() -> None:
     parser.add_argument("--timeout", default="2h", help="per Job")
     parser.add_argument("--budget", type=float, help="stop launching Jobs once each stage has cost this many dollars")
     parser.add_argument("--no-removed", action="store_true", help="don't keep removed pages (for whole dumps)")
+    parser.add_argument("--no-cc-prefilter", action="store_true", help="extract every page, as FineWeb does")
     parser.add_argument("--driver", metavar="COMMIT", help="run this command itself as a Job, from this commit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -161,6 +173,7 @@ def main() -> None:
     results = english_web(
         args.input_folder, args.output_folder, executor, tasks=args.tasks, glob_pattern=args.glob_pattern,
         paths=paths, stages=tuple(args.stages), keep_removed=not args.no_removed,
+        cc_languages=None if args.no_cc_prefilter else ("en",),
     )  # fmt: skip
     for name, stage_stats in results.items():
         print(f"== {name}\n{stage_stats}")
