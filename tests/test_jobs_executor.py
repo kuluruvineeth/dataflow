@@ -128,3 +128,15 @@ def test_bucket_location(logging_dir, expected):
 def test_rejects_logging_dir_outside_a_bucket(tmp_path):
     with pytest.raises(ValueError, match="hf://buckets"):
         JobsPipelineExecutor([], tmp_path, tasks=1).bucket_location()
+
+
+class PricedJobs(FakeJobs):
+    def hourly_price(self) -> float:
+        return 3.6e9
+
+
+def test_stops_launching_when_the_budget_is_spent(tmp_path):
+    executor = PricedJobs([record_rank], tmp_path, tasks=6, tasks_per_job=2, budget_usd=1e-6)
+    executor.launch()
+    assert executor.submitted == [[0, 1]]
+    assert sorted(SEEN) == [0, 1]

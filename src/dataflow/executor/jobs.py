@@ -43,6 +43,7 @@ class JobsPipelineExecutor(PipelineExecutor):
         timeout: str = "2h",
         max_jobs: int = -1,
         max_retries: int = 1,
+        budget_usd: float | None = None,
         poll_interval: float = 30,
         job_name: str = "dataflow",
         image: str = UV_IMAGE,
@@ -55,6 +56,7 @@ class JobsPipelineExecutor(PipelineExecutor):
         self.flavor = flavor
         self.timeout = timeout
         self.max_jobs = max_jobs
+        self.budget_usd = budget_usd
         self.max_retries = max_retries
         self.poll_interval = poll_interval
         self.job_name = job_name
@@ -99,10 +101,16 @@ class JobsPipelineExecutor(PipelineExecutor):
         attempts = [0] * len(chunks)
         ended: dict[str, datetime] = {}
         limit = len(chunks) if self.max_jobs == -1 else self.max_jobs
+        launched: dict[str, float] = {}
         while pending or running:
             while pending and len(running) < limit:
+                if self.budget_usd is not None and self.spent(launched, ended) >= self.budget_usd:
+                    logger.warning("budget of $%.2f reached; launching no more jobs", self.budget_usd)
+                    pending.clear()
+                    break
                 index, ranks = pending.popleft()
                 job_id = self.submit(ranks)
+                launched[job_id] = time.time()
                 self.record_launch(job_id, ranks)
                 attempts[index] += 1
                 running[job_id] = (index, ranks)
@@ -119,6 +127,22 @@ class JobsPipelineExecutor(PipelineExecutor):
                 if missing and attempts[index] <= self.max_retries:
                     pending.append((index, missing))
         return ended
+
+    def hourly_price(self) -> float:
+        from huggingface_hub import list_jobs_hardware
+
+        return next(hardware.unit_cost_usd * 60 for hardware in list_jobs_hardware() if hardware.name == self.flavor)
+
+    def spent(self, launched: dict[str, float], ended: dict[str, datetime]) -> float:
+        """An upper bound on what this run has cost: every job billed from its launch (scheduling time included) to
+        its end, or to now while it runs."""
+        if not hasattr(self, "_hourly_price"):
+            self._hourly_price = self.hourly_price()
+        now = time.time()
+        hours = (
+            sum((ended[job].timestamp() if job in ended else now) - start for job, start in launched.items()) / 3600
+        )
+        return hours * self._hourly_price
 
     def record_launch(self, job_id: str, ranks: list[int]) -> None:
         with self.logging_dir.open(f"jobs/launched/{job_id}.json", "w") as file:

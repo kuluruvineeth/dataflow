@@ -140,6 +140,7 @@ def main() -> None:
     parser.add_argument("--workers-per-job", type=int, default=8)
     parser.add_argument("--max-jobs", type=int, default=-1, help="Jobs running at once (-1: all)")
     parser.add_argument("--timeout", default="2h", help="per Job")
+    parser.add_argument("--budget", type=float, help="stop launching Jobs once each stage has cost this many dollars")
     parser.add_argument("--no-removed", action="store_true", help="don't keep removed pages (for whole dumps)")
     parser.add_argument("--driver", metavar="COMMIT", help="run this command itself as a Job, from this commit")
     args = parser.parse_args()
@@ -152,7 +153,7 @@ def main() -> None:
     if args.jobs:
         executor = jobs(
             flavor=args.flavor, tasks_per_job=args.tasks_per_job, workers_per_job=args.workers_per_job,
-            max_jobs=args.max_jobs, timeout=args.timeout,
+            max_jobs=args.max_jobs, timeout=args.timeout, budget_usd=args.budget,
         )  # fmt: skip
     else:
         executor = local(args.workers)
