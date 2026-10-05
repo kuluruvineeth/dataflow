@@ -48,6 +48,14 @@ def test_range_file_retries_a_503_then_gives_up():
         HttpRangeFile("https://example.org/f", client=client, retries=2, backoff=0)
 
 
+def test_a_401_from_an_expired_signed_url_is_retried():
+    from dataflow.sources.http import get_range
+
+    answers = [httpx.Response(401), httpx.Response(206, content=b"abc")]
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: answers.pop(0)))
+    assert get_range("https://example.org/f", 0, 3, client, backoff=0) == b"abc"
+
+
 def test_rate_limiter_spaces_calls():
     limiter = RateLimiter(per_second=50)
     started = time.monotonic()

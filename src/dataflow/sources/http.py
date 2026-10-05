@@ -10,7 +10,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+# 401: a signed CDN URL the Hub redirects to has expired; asking the original URL again gets a fresh one
+RETRY_STATUSES = {401, 403, 429, 500, 502, 503, 504}
 USER_AGENT = "dataflow/0.1 (+https://github.com/kuluruvineeth/dataflow)"
 
 
