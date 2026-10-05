@@ -31,6 +31,10 @@ dependencies = [
 monitor = [
     "trackio>=0.40.0",
 ]
+classifiers = [
+    "torch>=2.8",
+    "transformers>=4.56",
+]
 
 [project.scripts]
 dataflow = "dataflow.cli:main"
@@ -41,6 +45,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "dataflow[classifiers]",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]

@@ -7,17 +7,8 @@ import pytest
 from dataflow.data import Document
 from dataflow.pipeline.classifiers import FastTextClassifier
 from dataflow.pipeline.classifiers.fasttext import flatten
-from dataflow.recipes.dclm_classifier import (
-    NEGATIVE,
-    POSITIVE,
-    agreement,
-    eli5_texts,
-    openhermes_texts,
-    ranks,
-    spread,
-    train,
-    training_lines,
-)
+from dataflow.recipes.dclm_classifier import NEGATIVE, POSITIVE, eli5_texts, openhermes_texts, train, training_lines
+from dataflow.utils.agreement import agreement, ranks, spread
 
 GOOD = [
     "Plants make sugar from light because chlorophyll absorbs red and blue light and passes the energy on.",

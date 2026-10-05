@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 from dataflow.pipeline.classifiers import DCLM_OH_ELI5, FastTextClassifier
 from dataflow.pipeline.classifiers.fasttext import flatten
 from dataflow.pipeline.readers import JsonlReader
+from dataflow.utils.agreement import agreement, spread
 
 POSITIVE, NEGATIVE = "__label__hq", "__label__cc"
 FASTTEXT = {"lr": 0.1, "dim": 100, "ws": 5, "epoch": 5, "minCount": 1, "wordNgrams": 2}
@@ -78,32 +79,6 @@ def train(training_file: str | Path, output: str | Path, **overrides) -> Path:
     return Path(output)
 
 
-def ranks(values: np.ndarray) -> np.ndarray:
-    """Ranks from 1, ties sharing their average rank."""
-    order = np.argsort(values, kind="stable")
-    sorted_values = values[order]
-    result = np.empty(len(values))
-    start = 0
-    for end in range(1, len(values) + 1):
-        if end == len(values) or sorted_values[end] != sorted_values[start]:
-            result[order[start:end]] = (start + end + 1) / 2
-            start = end
-    return result
-
-
-def agreement(ours: np.ndarray, reference: np.ndarray, top: float = 0.1) -> dict:
-    """How closely two scorers agree on the same documents: rank and linear correlation, and the share of the
-    reference's top fraction that ours also puts in its top fraction (DCLM keeps the top 10%)."""
-    k = max(1, int(len(ours) * top))
-    top_ours, top_reference = set(np.argsort(-ours)[:k]), set(np.argsort(-reference)[:k])
-    return {
-        "documents": len(ours),
-        "spearman": float(np.corrcoef(ranks(ours), ranks(reference))[0, 1]),
-        "pearson": float(np.corrcoef(ours, reference)[0, 1]),
-        f"top_{top:g}_overlap": len(top_ours & top_reference) / k,
-    }
-
-
 def build_and_train(output: Path, per_source: int = 100_000, seed: int = 0) -> Path:
     from huggingface_hub import hf_hub_download
 
@@ -130,13 +105,6 @@ def build_and_train(output: Path, per_source: int = 100_000, seed: int = 0) -> P
          "positives": len(positives), "negatives": len(negatives), "seed": seed, "fasttext": FASTTEXT}, indent=2,
     ))  # fmt: skip
     return train(training_file, output / "model.bin")
-
-
-def spread(paths: list[str], count: int) -> list[str]:
-    """`count` paths evenly spaced through the sorted list, so a sample covers the whole run, not its first files."""
-    paths = sorted(paths)
-    step = max(1, len(paths) // count)
-    return paths[::step][:count]
 
 
 def compare(output: Path, documents_folder: str, limit: int, files: int = 20) -> dict:
