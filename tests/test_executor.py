@@ -63,3 +63,27 @@ def test_parallel_workers_run_every_rank(tmp_path):
     LocalPipelineExecutor(pipeline, tmp_path / "logs", tasks=4, workers=2).run()
     assert sorted(path.read_text() for path in out_dir.iterdir()) == ["0/4", "1/4", "2/4", "3/4"]
     assert completed(tmp_path / "logs") == ["00000", "00001", "00002", "00003"]
+
+
+def test_machines_share_one_run_without_doing_a_rank_twice(tmp_path):
+    seen_by_machine = []
+    for index in range(3):
+        SEEN.clear()
+        LocalPipelineExecutor([record_rank], tmp_path, tasks=7, workers=1, shard=(index, 3)).run()
+        seen_by_machine.append(list(SEEN))
+    assert seen_by_machine == [[0, 3, 6], [1, 4], [2, 5]]
+    assert completed(tmp_path) == [f"{rank:05d}" for rank in range(7)]
+    SEEN.clear()
+    LocalPipelineExecutor([record_rank], tmp_path, tasks=7, workers=1, shard=(0, 3)).run()
+    assert SEEN == []
+
+
+def test_a_shard_index_outside_the_count_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="shard index"):
+        LocalPipelineExecutor([record_rank], tmp_path, tasks=3, shard=(3, 3))
+
+
+def test_machine_option_reads_index_and_count():
+    from dataflow.recipes.english_web import machine_shard
+
+    assert machine_shard("4/9") == (4, 9)

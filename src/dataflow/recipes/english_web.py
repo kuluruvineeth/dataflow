@@ -36,9 +36,9 @@ STAGES = ("filter", "signatures", "buckets", "clusters", "dedup")
 BIG_MEMORY = "cpu-performance"
 
 
-def local(workers: int = -1) -> ExecutorFactory:
+def local(workers: int = -1, shard: tuple[int, int] | None = None) -> ExecutorFactory:
     def factory(pipeline: Pipeline, logging_dir: str, tasks: int, **_) -> PipelineExecutor:
-        return LocalPipelineExecutor(pipeline, logging_dir, tasks=tasks, workers=workers)
+        return LocalPipelineExecutor(pipeline, logging_dir, tasks=tasks, workers=workers, shard=shard)
 
     return factory
 
@@ -125,6 +125,12 @@ def english_web(
     return stats
 
 
+def machine_shard(value: str) -> tuple[int, int]:
+    """ "3/9" -> (3, 9)."""
+    index, count = (int(part) for part in value.split("/"))
+    return index, count
+
+
 def warc_paths(listing: str) -> list[str]:
     """The WARC paths of a crawl from its `warc.paths.gz` (a URL or a local file)."""
     if listing.startswith(("http://", "https://")):
@@ -145,6 +151,7 @@ def main() -> None:
     parser.add_argument("--max-files", type=int, help="only the first N files of --paths-from (for trial runs)")
     parser.add_argument("--stages", nargs="*", default=list(STAGES), choices=STAGES)
     parser.add_argument("--workers", type=int, default=-1, help="local worker processes")
+    parser.add_argument("--machine", metavar="I/N", help="local run on machine I of N: only ranks with rank % N == I")
     parser.add_argument("--jobs", action="store_true", help="run each stage on Hugging Face Jobs")
     parser.add_argument("--flavor", default="cpu-upgrade")
     parser.add_argument("--tasks-per-job", type=int, default=10)
@@ -168,7 +175,7 @@ def main() -> None:
             max_jobs=args.max_jobs, timeout=args.timeout, budget_usd=args.budget,
         )  # fmt: skip
     else:
-        executor = local(args.workers)
+        executor = local(args.workers, machine_shard(args.machine) if args.machine else None)
     paths = warc_paths(args.paths_from)[: args.max_files] if args.paths_from else None
     results = english_web(
         args.input_folder, args.output_folder, executor, tasks=args.tasks, glob_pattern=args.glob_pattern,
