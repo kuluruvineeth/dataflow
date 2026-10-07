@@ -81,7 +81,8 @@ class PipelineExecutor(ABC):
         ctx = multiprocessing.get_context(start_method)
         executor = cloudpickle.dumps(self)
         failures = []
-        with ProcessPoolExecutor(min(workers, len(ranks)), mp_context=ctx) as pool:
+        # A worker's memory grows with every rank it runs; a new process per rank keeps it at the start value.
+        with ProcessPoolExecutor(min(workers, len(ranks)), mp_context=ctx, max_tasks_per_child=1) as pool:
             for future in as_completed(pool.submit(_run_rank, executor, rank) for rank in ranks):
                 try:
                     future.result()

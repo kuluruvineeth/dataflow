@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,12 @@ def fail_on_rank_two(data, rank=0, world_size=1):
 def write_rank_file(data, rank=0, world_size=1):
     out_dir = Path(next(iter(data)).text)
     (out_dir / f"{rank:05d}.txt").write_text(f"{rank}/{world_size}")
+    yield from ()
+
+
+def write_process_id(data, rank=0, world_size=1):
+    out_dir = Path(next(iter(data)).text)
+    (out_dir / f"{rank:05d}.txt").write_text(str(os.getpid()))
     yield from ()
 
 
@@ -63,6 +70,16 @@ def test_parallel_workers_run_every_rank(tmp_path):
     LocalPipelineExecutor(pipeline, tmp_path / "logs", tasks=4, workers=2).run()
     assert sorted(path.read_text() for path in out_dir.iterdir()) == ["0/4", "1/4", "2/4", "3/4"]
     assert completed(tmp_path / "logs") == ["00000", "00001", "00002", "00003"]
+
+
+def test_every_rank_gets_a_new_worker_process(tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    pipeline = [[Document(text=str(out_dir), id="0")], write_process_id]
+    LocalPipelineExecutor(pipeline, tmp_path / "logs", tasks=4, workers=2).run()
+    process_ids = {path.read_text() for path in out_dir.iterdir()}
+    assert len(process_ids) == 4
+    assert str(os.getpid()) not in process_ids
 
 
 def test_machines_share_one_run_without_doing_a_rank_twice(tmp_path):
