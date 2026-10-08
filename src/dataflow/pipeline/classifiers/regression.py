@@ -1,7 +1,7 @@
 from itertools import islice
 
 from dataflow.data import DocumentsPipeline
-from dataflow.pipeline.base import PipelineStep
+from dataflow.pipeline.classifiers.base import ScoringStep
 
 FINEWEB_EDU = "HuggingFaceFW/fineweb-edu-classifier"
 
@@ -14,7 +14,7 @@ def best_device() -> str:
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-class RegressionClassifier(PipelineStep):
+class RegressionClassifier(ScoringStep):
     """Scores documents in batches with a sequence-classification model that has one regression output, such as
     FineWeb-Edu's educational-value classifier or one trained the same way. Stores the score under `key` and, as
     FineWeb-Edu publishes it, the score rounded and clipped to 0-5 under `{key}_int`. Nothing is dropped.
@@ -43,7 +43,7 @@ class RegressionClassifier(PipelineStep):
             self._loaded = (AutoTokenizer.from_pretrained(self.model_name), model, device)
         return self._loaded
 
-    def scores(self, texts: list[str]) -> list[float]:
+    def model_scores(self, texts: list[str]) -> list[float]:
         import torch
 
         tokenizer, model, device = self.load()

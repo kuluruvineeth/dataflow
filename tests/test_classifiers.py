@@ -43,6 +43,22 @@ def test_scores_go_into_metadata_and_nothing_is_dropped(model_path):
     assert step.stats.metrics["scored"].total == 2
 
 
+def test_batches_give_the_same_scores_as_single_texts(model_path):
+    step = FastTextClassifier(model_path, key="dclm", batch_size=2)
+    texts = GOOD + SPAM
+    assert step.scores(texts) == [step.score(text) for text in texts]
+    documents = [Document(text, str(i)) for i, text in enumerate(texts)]
+    assert [document.metadata["dclm"] for document in step.run(documents)] == [round(step.score(t), 6) for t in texts]
+
+
+def test_a_step_with_a_scorer_does_not_load_its_model():
+    step = FastTextClassifier("/no/such/model.bin", key="dclm")
+    step.scorer = lambda texts: [0.25] * len(texts)
+    scored = [document.metadata["dclm"] for document in step.run([Document(GOOD[0], "a"), Document(SPAM[0], "b")])]
+    assert scored == [0.25, 0.25]
+    assert step._model is None
+
+
 def test_the_loaded_model_is_not_pickled(model_path):
     step = FastTextClassifier(model_path)
     step.score(GOOD[1])

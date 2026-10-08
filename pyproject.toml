@@ -35,6 +35,9 @@ classifiers = [
     "torch>=2.8",
     "transformers>=4.56",
 ]
+ray = [
+    "ray>=2.59.0",
+]
 
 [project.scripts]
 dataflow = "dataflow.cli:main"
@@ -45,7 +48,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "dataflow[classifiers]",
+    "dataflow[classifiers,ray]",
+    "hypothesis>=6.168.5",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
