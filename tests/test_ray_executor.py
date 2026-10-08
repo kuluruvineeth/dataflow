@@ -14,7 +14,7 @@ from hypothesis import strategies as st
 
 from dataflow.data import Document
 from dataflow.executor.local import LocalPipelineExecutor
-from dataflow.executor.ray import RayPipelineExecutor, run_with_refill
+from dataflow.executor.ray import RankLost, RayPipelineExecutor, run_with_refill
 from dataflow.pipeline.classifiers import FastTextClassifier
 from dataflow.pipeline.classifiers.base import ScoringStep
 from dataflow.pipeline.filters.lambda_filter import LambdaFilter
@@ -53,7 +53,7 @@ def local_ray():
     with pytest.MonkeyPatch.context() as patch:
         for name, value in TEST_ENV.items():
             patch.setenv(name, value)
-        ray.init(address="local", num_cpus=4, include_dashboard=False)
+        ray.init(address="local", num_cpus=8, include_dashboard=False)
         yield
         ray.shutdown()
 
@@ -82,6 +82,14 @@ def outputs(folder: Path) -> dict[str, bytes]:
 
 def markers(logs: Path) -> list[str]:
     return sorted(path.name for path in (logs / "completions").iterdir())
+
+
+def submissions(logs: Path) -> dict[int, list[dict]]:
+    records: dict[int, list[dict]] = {}
+    for path in sorted((logs / "submissions").iterdir()):
+        record = json.loads(path.read_text())
+        records.setdefault(record["rank"], []).append(record)
+    return {rank: sorted(found, key=lambda r: r["submission"]) for rank, found in records.items()}
 
 
 def stats_without_time(logs: Path) -> list[dict]:
@@ -205,12 +213,56 @@ def die_once(attempts: Path, rank_to_kill: int):
     return step
 
 
-def test_a_worker_that_dies_runs_its_rank_again(local_ray, tmp_path):
+def test_the_executor_submits_a_lost_rank_again_and_records_it(local_ray, tmp_path, caplog):
     pipeline = [die_once(tmp_path / "attempted", 1), JsonlWriter(tmp_path / "out")]
     RayPipelineExecutor(pipeline, tmp_path / "logs", tasks=4, workers=2).run()
     assert (tmp_path / "attempted").exists()
     assert markers(tmp_path / "logs") == ["00000", "00001", "00002", "00003"]
     assert outputs(tmp_path / "out")["00001.jsonl.gz"] == b'{"text":"rank 1","id":"1"}\n'
+    records = submissions(tmp_path / "logs")
+    assert {rank: len(found) for rank, found in records.items()} == {0: 1, 1: 2, 2: 1, 3: 1}
+    assert records[1][1]["previous_error"] == "rank 1 failed: WorkerCrashedError"
+    assert "rank 1 lost on submission 1: WorkerCrashedError; submission 2" in caplog.text
+
+
+def die_after_marker(logs: Path, rank_to_kill: int):
+    def step(data, rank=0, world_size=1):
+        if rank == rank_to_kill:
+            (logs / "completions").mkdir(parents=True, exist_ok=True)
+            (logs / "completions" / f"{rank:05d}").touch()
+            os._exit(1)
+        yield from ()
+
+    return step
+
+
+def test_a_rank_lost_after_its_marker_is_not_submitted_again(local_ray, tmp_path):
+    logs = tmp_path / "logs"
+    RayPipelineExecutor([die_after_marker(logs, 1)], logs, tasks=3, workers=3).run()
+    assert {rank: len(found) for rank, found in submissions(logs).items()} == {0: 1, 1: 1, 2: 1}
+    assert markers(logs) == ["00000", "00001", "00002"]
+
+
+def test_the_placement_group_is_removed_after_the_run(local_ray, tmp_path):
+    RayPipelineExecutor([touch_rank(tmp_path / "out")], tmp_path / "logs", tasks=4, workers=2).run()
+    groups = ray.util.placement_group_table().values()
+    assert groups and all(group["state"] == "REMOVED" for group in groups)
+
+
+def test_without_a_placement_strategy_there_is_no_group(local_ray, tmp_path):
+    before = len(ray.util.placement_group_table())
+    pipeline = [touch_rank(tmp_path / "out")]
+    RayPipelineExecutor(pipeline, tmp_path / "logs", tasks=2, workers=2, placement_strategy=None).run()
+    assert len(ray.util.placement_group_table()) == before
+    assert markers(tmp_path / "logs") == ["00000", "00001"]
+
+
+def test_a_group_that_cannot_fit_stops_the_run(local_ray, tmp_path):
+    executor = RayPipelineExecutor([touch_rank(tmp_path / "out")], tmp_path / "logs", tasks=2, workers=20)
+    executor.placement_timeout = 1
+    with pytest.raises(RuntimeError, match=r"placement group .* \(PACK\) not ready after 1 s"):
+        executor.run()
+    assert not (tmp_path / "logs" / "completions").exists()
 
 
 def test_without_retries_a_dead_worker_fails_its_rank(local_ray, tmp_path):
@@ -218,40 +270,59 @@ def test_without_retries_a_dead_worker_fails_its_rank(local_ray, tmp_path):
     with pytest.raises(RuntimeError, match="1 of 2 ranks failed, first: rank 1 failed: WorkerCrashedError"):
         RayPipelineExecutor(pipeline, tmp_path / "logs", tasks=2, workers=2, max_retries=0).run()
     assert markers(tmp_path / "logs") == ["00000"]
+    assert len(submissions(tmp_path / "logs")[1]) == 1
 
 
 def test_default_workers_are_the_cluster_cpus_less_the_model_hosts(local_ray, tmp_path):
-    assert RayPipelineExecutor([], tmp_path).default_workers(model_hosts=1) == 3
-    assert RayPipelineExecutor([], tmp_path, cpus_per_task=2).default_workers(model_hosts=0) == 2
+    assert RayPipelineExecutor([], tmp_path).default_workers(model_hosts=1) == 7
+    assert RayPipelineExecutor([], tmp_path, cpus_per_task=2).default_workers(model_hosts=0) == 4
 
 
 @given(
     ranks=st.lists(st.integers(0, 60), unique=True, max_size=40),
     workers=st.integers(1, 8),
-    failing=st.sets(st.integers(0, 60)),
+    max_retries=st.integers(0, 3),
+    outcomes=st.lists(st.sampled_from(["ok", "ok", "lost", "error"]), min_size=1, max_size=50),
     seed=st.integers(0, 2**32),
 )
-def test_refill_runs_each_rank_once_and_keeps_the_workers_busy(ranks, workers, failing, seed):
+def test_refill_submits_only_lost_ranks_again_in_their_slot(ranks, workers, max_retries, outcomes, seed):
     order = random.Random(seed)
-    submitted, running, peaks = [], set(), []
+    running, history, peaks, ended = {}, [], [], []
+    outcome_of = {}
 
-    def submit(rank):
-        submitted.append(rank)
-        running.add(rank)
+    def submit(rank, slot, submission, previous):
+        handle = (rank, submission)
+        assert slot not in {s for s, _ in running.values()}
+        assert (previous is None) == (submission == 1)
+        running[handle] = (slot, submission)
+        history.append((rank, slot, submission))
         peaks.append(len(running))
-        return rank
+        outcome_of[handle] = outcomes[len(history) % len(outcomes)]
+        return handle
 
     def wait(handles):
-        assert set(handles) == running
+        assert set(handles) == set(running)
         done = order.choice(sorted(handles))
-        running.remove(done)
+        del running[done]
         return done
 
-    def result(handle):
-        if handle in failing:
-            raise ValueError(handle)
+    def result(handle, rank):
+        if outcome_of[handle] == "lost":
+            raise RankLost(RuntimeError("worker died"))
+        if outcome_of[handle] == "error":
+            raise ValueError(rank)
+        ended.append(rank)
 
-    failures = run_with_refill(ranks, workers, submit, wait, result)
-    assert sorted(submitted) == sorted(ranks)
+    failures = run_with_refill(ranks, workers, submit, wait, result, max_retries=max_retries)
+    failed = [rank for rank, _ in failures]
+    assert sorted(ended + failed) == sorted(ranks)
     assert max(peaks, default=0) == min(workers, len(ranks))
-    assert sorted(rank for rank, _ in failures) == sorted(set(ranks) & failing)
+    for rank in ranks:
+        mine = [(slot, n) for r, slot, n in history if r == rank]
+        assert [n for _, n in mine] == list(range(1, len(mine) + 1))
+        assert len(mine) <= max_retries + 1
+        assert len({slot for slot, _ in mine}) == 1
+        results = [outcome_of[(rank, n)] for _, n in mine]
+        assert all(outcome == "lost" for outcome in results[:-1])
+        assert results[-1] != "lost" or len(mine) == max_retries + 1
+        assert (rank in ended) == (results[-1] == "ok")
